@@ -13,6 +13,8 @@ When they're done, one command gives you the whole machine back, and proves noth
 
 </div>
 
+> 💛 *For Domi. This project exists because of her, and that's why it's named after her.* [Read the story](#-why-its-called-domi-pc)
+
 ---
 
 ## Why
@@ -69,6 +71,17 @@ See the Spanish [README](README.md) for details on non-Steam games, launchers, R
 This isolates a *trusted* user on your machine; it is not a sandbox against a determined attacker.
 The firewall does not block `127.0.0.0/8`; `/srv/juegos` has no sticky bit (the panel needs the guest to delete games).
 Tested on CachyOS + Hyprland + RTX 4050 only: [tell us about your hardware](CONTRIBUTING.md).
+
+## 💛 Why it's called domi-pc
+
+This project is made **in honor of Domi**, my girlfriend. It started with a simple idea: let her play on my
+computer without me having to stop working and without either of us getting in the other's way. That became the
+`domi` user, "Domi mode" and the name `domi-pc`.
+
+None of this would exist without her: she was the reason to build it, and every piece (the isolation, the panel,
+the cover art, the `off` that gives everything back) is meant so she can play in peace and so can I. Thank you, Domi.
+
+If it helps you share your PC with someone you love, that's the best reason to use it.
 
 ## License
 

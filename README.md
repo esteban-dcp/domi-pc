@@ -13,6 +13,8 @@ Cuando terminan, un comando te devuelve la máquina entera, y te demuestra que n
 
 </div>
 
+> 💛 *Para Domi. Este proyecto existe por ella y por eso se llama así.* [Leer la historia](#-por-qué-se-llama-domi-pc)
+
 ---
 
 ## ¿Por qué existe?
@@ -159,6 +161,17 @@ Esto aísla a un usuario *de confianza* en tu máquina, no es un sandbox contra 
 ## 🤝 Contribuir
 
 Hay un [CONTRIBUTING](CONTRIBUTING.md) con reglas de oro, una checklist de pruebas y una lista de cosas que nos encantaría ver.
+
+## 💛 Por qué se llama domi-pc
+
+Este proyecto está hecho **en honor a Domi**, mi novia. Todo empezó con una idea simple: que ella pudiera jugar
+en mi computador, sin que yo dejara de trabajar y sin que ninguno de los dos se estorbara. De ahí salió el usuario
+`domi`, el modo Domi y el nombre `domi-pc`.
+
+Sin ella no existiría nada de esto: fue su motivo para montarlo, y cada pieza (el aislamiento, el panel, las
+portadas, el `off` que devuelve todo) está pensada para que ella juegue tranquila y yo también. Gracias, Domi.
+
+Si te sirve para compartir tu PC con alguien que quieres, esa es la mejor razón para usarlo.
 
 ## 📄 Licencia
 
