@@ -1,0 +1,21 @@
+# Domi-PC — botón de la barra para el modo Domi (domictl on/off) con estado en vivo.
+# Requiere `domictl` en el PATH (bin/domictl del repo domi-pc).
+
+id = "local/domi-pc"
+name = "Domi-PC"
+version = "0.1.0"
+plugin_api = 25
+author = "local"
+license = "MIT"
+dependencies = ["domictl"]
+tags = ["gaming"]
+icon = "device-gamepad-2"
+description = "Enciende/apaga el modo Domi y muestra si Domi está conectada."
+
+[[service]]
+id = "poll"
+entry = "service.luau"
+
+[[widget]]
+id = "toggle"
+entry = "widget.luau"

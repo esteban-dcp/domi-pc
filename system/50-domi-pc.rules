@@ -1,0 +1,16 @@
+// domi-pc: @ADMIN@ gestiona los servicios del modo Domi sin contraseña.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" && subject.user == "@ADMIN@") {
+        var unit = action.lookup("unit");
+        var allowed = ["moonshine@@DOMI@.service", "domi-tailscale.service",
+                       "docker.service", "docker.socket"];
+        if (allowed.indexOf(unit) >= 0) {
+            return polkit.Result.YES;
+        }
+    }
+    // Moonshine (como domi) puede impedir la suspensión mientras transmite.
+    if ((action.id == "org.freedesktop.login1.inhibit-block-sleep" ||
+         action.id == "org.freedesktop.login1.inhibit") && subject.user == "@DOMI@") {
+        return polkit.Result.YES;
+    }
+});

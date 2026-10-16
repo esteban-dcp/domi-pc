@@ -1,0 +1,34 @@
+# Secretos y credenciales (nunca al repo)
+*.pem
+*.key
+*.state
+steamgriddb.key
+sunshine_state.json
+credentials/
+
+# Intento anterior (Sunshine): claves, logs y estado personal
+legacy/
+
+# Binarios y artefactos de build (se referencia el PKGBUILD, no el binario)
+build/
+*.pkg.tar.zst
+*.tar.zst
+
+# Logs y mediciones personales
+logs/
+*.log
+*.log.*
+*.csv
+
+# Notas e informes personales
+INFORME-*.md
+PROYECTO FALLIDO ENTORNO.txt
+
+# Copias de seguridad y temporales
+*.bak
+*.bak-*
+__pycache__/
+.claude/
+
+scripts/.impeccable/
+.impeccable/

@@ -1,0 +1,17 @@
+[Unit]
+Description=Tailscale de Domi (tailnet personal) en el namespace aislado domi-ts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/local/lib/domi-pc/domi-netns.sh up
+ExecStart=/usr/bin/ip netns exec domi-ts /usr/bin/tailscaled --state=/var/lib/domi-tailscale/tailscaled.state --statedir=/var/lib/domi-tailscale --socket=/run/domi-tailscale/tailscaled.sock --tun=tailscale0 --port=41642
+ExecStopPost=/usr/local/lib/domi-pc/domi-netns.sh down
+RuntimeDirectory=domi-tailscale
+StateDirectory=domi-tailscale
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

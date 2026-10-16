@@ -1,0 +1,13 @@
+[Unit]
+Description=Firewall de salida del usuario domi (sin acceso a LAN ni a la tailnet de trabajo)
+After=network-pre.target ufw.service
+Before=network.target moonshine@@DOMI@.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/domi-pc/domi-firewall.sh up
+ExecStop=/usr/local/lib/domi-pc/domi-firewall.sh down
+
+[Install]
+WantedBy=multi-user.target

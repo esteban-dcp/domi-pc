@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# domi-import — buzón de juegos no-Steam para Domi.
+#
+# Suelta en ~/Juegos-Domi una carpeta de juego (con su .exe) o un .zip/.7z/.rar.
+# Cuando termina de copiarse:
+#   1. se descomprime si es un archivo,
+#   2. se MUEVE a /srv/juegos/<nombre> (reflink en btrfs: instantáneo, sin duplicar espacio),
+#   3. se registra para Domi: catálogo + portadas de SteamGridDB + Steam (ahora o al cerrar su sesión).
+# Lo que no se pueda importar va a ~/Juegos-Domi-revisar con el motivo.
+# Lo dispara domi-import.path (systemd --user); también se puede ejecutar a mano.
+set -uo pipefail
+
+INBOX=$HOME/Juegos-Domi
+REVIEW=$HOME/Juegos-Domi-revisar
+DEST=/srv/juegos
+LIB=/usr/local/lib/domi-pc
+KEY=$HOME/.config/domi-pc/steamgriddb.key
+STABLE_SECS=20      # sin cambios de tamaño durante este tiempo = copia terminada
+MAX_WAIT=$((3*3600))
+
+mkdir -p "$INBOX" "$REVIEW"
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/domi-import.lock"
+flock -n 9 || exit 0   # ya hay una importación en curso
+
+notify() { notify-send -a "Juegos de Domi" "$@" 2>/dev/null || true; echo "[domi-import] $*"; }
+[[ -r /etc/domi-pc.conf ]] && . /etc/domi-pc.conf
+DOMI=${DOMI_USER:-domi}
+as_domi() { sudo -n -u "$DOMI" env HOME="$(getent passwd "$DOMI" | cut -d: -f6)" XDG_RUNTIME_DIR=/run/user/$(id -u "$DOMI") "$@"; }
+
+fingerprint() { find "$1" -printf '%s %T@\n' 2>/dev/null | sort | md5sum; }
+
+wait_stable() {
+  local item=$1 waited=0 a b
+  a=$(fingerprint "$item")
+  while (( waited < MAX_WAIT )); do
+    sleep "$STABLE_SECS"; waited=$((waited + STABLE_SECS))
+    [[ -e $item ]] || return 1
+    b=$(fingerprint "$item")
+    [[ $a == "$b" ]] && return 0
+    a=$b
+  done
+  return 1
+}
+
+to_review() {
+  local item=$1 why=$2 base
+  base=$(basename "$item")
+  mv -- "$item" "$REVIEW/" && printf '%s\n' "$why" > "$REVIEW/$base.motivo.txt"
+  notify "No se pudo importar «$base»" "$why (quedó en ~/Juegos-Domi-revisar)"
+}
+
+if ! [[ -w $DEST ]]; then
+  notify "Importación pausada" "Tu sesión aún no tiene el grupo 'games': cierra sesión y vuelve a entrar."
+  exit 1
+fi
+
+shopt -s nullglob
+for item in "$INBOX"/*; do
+  name=$(basename "$item")
+  [[ $name == .* || $name == *.part || $name == *.crdownload ]] && continue
+  wait_stable "$item" || { to_review "$item" "La copia no terminó en 3 h"; continue; }
+
+  # Archivos comprimidos: extraer junto al original y seguir con la carpeta
+  case "${name,,}" in
+    *.zip|*.7z|*.rar)
+      folder="$INBOX/${name%.*}"
+      mkdir -p "$folder"
+      if 7z x -y -o"$folder" -- "$item" >/dev/null; then
+        rm -f -- "$item"
+        # si el archivo traía una sola carpeta dentro, usar esa
+        mapfile -t inner < <(find "$folder" -mindepth 1 -maxdepth 1)
+        if (( ${#inner[@]} == 1 )) && [[ -d ${inner[0]} ]]; then
+          mv -- "${inner[0]}" "$folder.tmp" && rmdir "$folder" && mv -- "$folder.tmp" "$folder"
+        fi
+        item=$folder; name=$(basename "$folder")
+      else
+        rm -rf -- "$folder"; to_review "$item" "No se pudo descomprimir"; continue
+      fi ;;
+  esac
+
+  [[ -d $item ]] || { to_review "$item" "No es una carpeta de juego"; continue; }
+  find "$item" -maxdepth 3 -iname '*.exe' | grep -q . || { to_review "$item" "No contiene ningún .exe"; continue; }
+  [[ -e $DEST/$name ]] && { to_review "$item" "Ya existe /srv/juegos/$name"; continue; }
+
+  notify "Importando «$name»…"
+  if ! cp -a --reflink=auto -- "$item" "$DEST/$name"; then
+    rm -rf -- "${DEST:?}/$name"; to_review "$item" "Falló la copia a /srv/juegos"; continue
+  fi
+  chmod -R g+rwX "$DEST/$name"
+  rm -rf -- "$item"
+
+  if out=$(as_domi python3 -I "$LIB/domi-register.py" "$name" "$DEST/$name" < "$KEY" 2>&1); then
+    notify "«$name» listo para Domi" "$(grep -E '^(portadas|Steam)' <<<"$out" | head -2)"
+  else
+    notify "«$name» copiado, pero falló el registro" "$out"
+  fi
+done

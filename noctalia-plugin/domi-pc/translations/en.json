@@ -1,0 +1,10 @@
+{
+  "notify": { "failed": "domictl failed (see 'domictl doctor')" },
+  "tooltip": {
+    "unavailable": "domictl not found",
+    "busy": "Working…",
+    "connected": "Domi mode ON — Domi is playing (click: turn off)",
+    "on": "Domi mode ON, nobody connected (click: turn off)",
+    "off": "Domi mode OFF (click: turn on)"
+  }
+}

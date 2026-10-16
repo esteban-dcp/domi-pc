@@ -1,0 +1,12 @@
+{
+  "notify": {
+    "failed": "domictl falló (mira 'domictl doctor')"
+  },
+  "tooltip": {
+    "unavailable": "No se encuentra domictl",
+    "busy": "Trabajando…",
+    "connected": "Modo Domi ACTIVO — Domi está jugando (clic: apagar)",
+    "on": "Modo Domi ACTIVO, sin nadie conectado (clic: apagar)",
+    "off": "Modo Domi APAGADO (clic: encender)"
+  }
+}

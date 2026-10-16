@@ -1,0 +1,8 @@
+[Unit]
+Description=Importa juegos no-Steam de ~/Juegos-Domi a /srv/juegos para Domi
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/domi-pc/domi-import
+Nice=10
+IOSchedulingClass=idle

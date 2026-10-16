@@ -1,0 +1,8 @@
+# domi-pc: mandos virtuales de Moonshine -> solo para domi, fuera del seat del administrador.
+# ID_SEAT a un seat sin sesión: ni libinput (Hyprland) ni uaccess (ACL del administrador) los toman.
+SUBSYSTEMS=="input", ATTRS{name}=="Moonshine *", ENV{ID_SEAT}="seat-domi", ENV{LIBINPUT_IGNORE_DEVICE}="1", OWNER="@DOMI@", GROUP="root", MODE="0600"
+SUBSYSTEM=="hidraw", KERNELS=="uhid", IMPORT{parent}="HID_NAME", ENV{HID_NAME}=="Moonshine *", ENV{ID_SEAT}="seat-domi", OWNER="@DOMI@", GROUP="root", MODE="0600"
+# Crear dispositivos virtuales: solo el servicio Moonshine (SupplementaryGroups=moonshine).
+# el usuario de Domi NO está en el grupo moonshine: un juego no puede inyectar teclas en el escritorio del administrador.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="moonshine", MODE="0660"
+KERNEL=="uhid", GROUP="moonshine", MODE="0660"

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Domi-PC · Biblioteca</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="panel-token" content="__TOKEN__">
+<link rel="stylesheet" href="/static/app.css?t=__TOKEN__">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="logo" aria-hidden="true"></span><h1>Domi-PC</h1></div>
+  <div class="pills" id="pills" aria-live="polite"></div>
+  <button class="btn pri" id="btn-add">+ Añadir juego</button>
+</header>
+
+<main class="layout">
+  <section class="library" aria-label="Biblioteca">
+    <div class="tools">
+      <input id="filter" type="search" placeholder="Filtrar juegos…" aria-label="Filtrar juegos">
+      <span class="muted" id="count"></span>
+    </div>
+    <div id="games" class="covers" role="list"></div>
+  </section>
+
+  <section class="detail" id="detail" aria-label="Detalle del juego">
+    <div class="empty">
+      <div class="empty-art" aria-hidden="true"></div>
+      <h2>Elige un juego</h2>
+      <p class="muted">Cambia sus portadas, o libera espacio quitándolo.<br>Para añadir uno, suelta su carpeta en <code>~/Juegos-Domi</code>.</p>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg-add">
+  <form method="dialog" class="dlg">
+    <h2>Añadir juego</h2>
+    <p class="muted">Lo más fácil: suelta la carpeta (o .zip/.7z/.rar) en <code>~/Juegos-Domi</code>. O elige un .exe ya copiado en <code>/srv/juegos</code>.</p>
+    <label>Ejecutable<select id="exe"></select></label>
+    <label>Nombre en Steam<input id="name" placeholder="Nombre en Steam"></label>
+    <div class="row end">
+      <button class="btn" value="cancel">Cancelar</button>
+      <button class="btn pri" id="do-add" value="default">Añadir con Proton</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="/static/app.js?t=__TOKEN__"></script>
+</body>
+</html>

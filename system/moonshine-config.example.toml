@@ -1,0 +1,85 @@
+name = "Domi-PC"
+address = "0.0.0.0"
+inhibit_sleep = true
+
+[webserver]
+port = 47989
+port_https = 47984
+enable_pairing = true
+certificate = "$HOME/.config/moonshine/cert.pem"
+private_key = "$HOME/.config/moonshine/key.pem"
+
+[stream]
+port = 48010
+timeout = 60
+
+[stream.video]
+port = 47998
+fec_percentage = 20
+encrypt = false
+log_frame_spikes = false
+max_packet_size = 0
+
+[stream.audio]
+port = 48000
+
+[stream.control]
+port = 47999
+
+[stream.control.gamepad.home_button]
+hold_ms = 0
+rumble_duration_ms = 50
+rumble_intensity = 0.5
+suppress_home = false
+
+[[application]]
+title = "Steam"
+# boxart = "$HOME/.config/moonshine/boxart/steam.png"   # opcional: tu portada 600x900
+command = [
+    "/usr/bin/steam",
+    "steam://open/bigpicture",
+]
+launch_timeout_secs = 2
+# Al cerrar la sesión (Steam cerrado) se añaden los juegos importados mientras jugaba
+post_command = [["/usr/bin/python3", "-I", "/usr/local/lib/domi-pc/domi-sync.py"]]
+stdout = "journal"
+stderr = "journal"
+
+[[application]]
+title = "Roblox"
+# boxart = "$HOME/.config/moonshine/boxart/roblox.png"   # opcional: tu portada 600x900
+# gamescope aporta pantalla completa, foco y gestor de ventanas a Sober (en Xwayland sin WM no recibe entrada)
+command = ["/bin/sh", "-c", "/usr/bin/flatpak kill org.vinegarhq.Sober 2>/dev/null; exec /usr/bin/gamescope -f -- /usr/bin/flatpak run org.vinegarhq.Sober"]
+post_command = [["/usr/bin/flatpak", "kill", "org.vinegarhq.Sober"]]
+launch_timeout_secs = 10
+stdout = "journal"
+stderr = "journal"
+
+[[application]]
+title = "⛔ NO TOCAR (solo Dev)"
+boxart = "$HOME/.config/moonshine/boxart/dev.png"
+command = ["/usr/bin/foot", "/bin/bash"]
+launch_timeout_secs = 5
+stdout = "journal"
+stderr = "journal"
+
+[[application_scanner]]
+type = "steam"
+library = "$HOME/.local/share/Steam"
+command = [
+    "/usr/bin/steam",
+    "-bigpicture",
+    "steam://rungameid/{game_id}",
+]
+launch_timeout_secs = 2
+
+[compositor]
+gpu = "/dev/dri/by-path/pci-@NV_PCI@-render"
+hdr = false
+steam_mode = true
+virtual_connector_strategy = "single_application"
+
+[compositor.keyboard]
+layout = "us"   # distribución del teclado virtual (latam, es, us...)
+variant = ""
+model = ""

@@ -1,0 +1,11 @@
+[Unit]
+Description=Vigila ~/Juegos-Domi para importar juegos no-Steam de Domi
+
+[Path]
+PathChanged=%h/Juegos-Domi
+MakeDirectory=yes
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=20
+
+[Install]
+WantedBy=default.target

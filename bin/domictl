@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# domictl — modo Domi: sesión de juego aislada para Domi en la RTX 4050, por Moonlight.
+#
+#   domictl on              activa el modo Domi (pausa Docker y JetBrains, levanta VPN + Moonshine)
+#   domictl off [--force]   lo desactiva y restaura lo pausado
+#   domictl status [--json] estado de servicios, cliente, GPU, RAM y VPN
+#   domictl doctor          diagnóstico por capas (qué falla y dónde)
+#   domictl pin <PIN>       empareja un cliente Moonlight nuevo
+#   domictl add-game <nombre> <ruta.exe>   registra un juego no-Steam con Proton (Steam de Domi cerrado)
+#   domictl panel           panel web: portadas de SteamGridDB y añadir juegos de /srv/juegos
+#   domictl sync            reaplica juegos no-Steam + portadas del catálogo a la cuenta de Steam de Domi
+#   domictl logs            sigue los logs de Moonshine
+set -uo pipefail
+
+[[ -r /etc/domi-pc.conf ]] && . /etc/domi-pc.conf   # lo genera system/install-system.sh
+DOMI=${DOMI_USER:-domi}
+DOMI_HOME=$(getent passwd "$DOMI" | cut -d: -f6)
+DOMI_UID=$(id -u "$DOMI" 2>/dev/null) || { echo "Falta el usuario $DOMI (ver README)" >&2; exit 1; }
+NV_PCI=${NV_PCI:?NV_PCI no definido: ejecuta system/install-system.sh}
+NV_RENDER=/dev/dri/by-path/pci-$NV_PCI-render
+TS_SOCK=/run/domi-tailscale/tailscaled.sock
+LIB_DIR=/usr/local/lib/domi-pc   # scripts instalados root:root (domi no lee el HOME del administrador)
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/domi-pc
+mkdir -p "$STATE_DIR"
+
+if [[ -z ${NO_COLOR:-} && -t 1 ]]; then c_ok=$'\e[32m'; c_warn=$'\e[33m'; c_err=$'\e[31m'; c_dim=$'\e[2m'; c_off=$'\e[0m'; else c_ok=; c_warn=; c_err=; c_dim=; c_off=; fi
+ok()   { printf '%s✔%s %s\n' "$c_ok" "$c_off" "$*"; }
+warn() { printf '%s!%s %s\n' "$c_warn" "$c_off" "$*"; }
+err()  { printf '%s✘%s %s\n' "$c_err" "$c_off" "$*"; }
+info() { printf '%s·%s %s\n' "$c_dim" "$c_off" "$*"; }
+notify() { command -v notify-send >/dev/null && notify-send -a "Modo Domi" "$@" 2>/dev/null || true; }
+
+as_domi() { sudo -n -u "$DOMI" env XDG_RUNTIME_DIR=/run/user/$DOMI_UID HOME=$DOMI_HOME "$@"; }
+dts() { tailscale --socket="$TS_SOCK" "$@"; }
+
+on_ac() {
+  local f
+  for f in /sys/class/power_supply/*/online; do
+    [[ -r $f && $(cat "$f") == 1 ]] && return 0
+  done
+  return 1
+}
+
+# Hay un cliente transmitiendo si el último evento de sesión de la ejecución ACTUAL de
+# Moonshine es un inicio. Si no se puede leer el journal, se asume conectada (más seguro).
+client_connected() {
+  local inv out last
+  inv=$(systemctl show -p InvocationID --value "moonshine@$DOMI" 2>/dev/null)
+  [[ -z $inv ]] && return 1                       # servicio parado: nadie conectado
+  out=$(journalctl _SYSTEMD_INVOCATION_ID="$inv" --no-pager -o cat 2>/dev/null) || return 0
+  last=$(grep -E 'Starting session streams|Session stopped|Compositor stopped|Moonshine is ready' <<<"$out" | tail -1)
+  [[ $last == *"Starting session streams"* ]]
+}
+
+# PIDs propios cuyo ejecutable es un IDE de JetBrains o el Toolbox (no un `tail` de sus logs).
+jetbrains_pids() {
+  local pid exe
+  for pid in $(pgrep -u "$UID" -f -i '(/JetBrains/|jetbrains-toolbox)'); do
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || continue
+    [[ $exe == *JetBrains* || $exe == *jetbrains* || $exe == */jbr/bin/java ]] && echo "$pid"
+  done
+}
+
+stop_jetbrains() {
+  local pids
+  pids=$(jetbrains_pids)
+  [[ -z $pids ]] && { info "JetBrains no estaba abierto"; return; }
+  info "Cerrando JetBrains (guardado normal)…"
+  kill -TERM $pids 2>/dev/null || true
+  for _ in $(seq 1 20); do [[ -z $(jetbrains_pids) ]] && break; sleep 1; done
+  if [[ -n $(jetbrains_pids) ]]; then
+    warn "JetBrains sigue abierto (¿diálogo de guardar?). Ciérralo a mano si quieres liberar RAM."
+  else
+    ok "JetBrains cerrado"
+    touch "$STATE_DIR/jetbrains-was-open"
+  fi
+}
+
+mem_avail_mb() { awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo; }
+
+# Procesos de Domi fuera de la base de su sesión. Se decide por cgroup (el nombre del proceso
+# lo puede falsear cualquiera): solo valen init.scope del user manager y los servicios base.
+domi_leftover_pids() {
+  local pid cg
+  for pid in $(pgrep -u "$DOMI" 2>/dev/null); do
+    cg=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
+    case $cg in
+      */init.scope|*/app.slice/pipewire.service|*/app.slice/pipewire-pulse.service|*/app.slice/wireplumber.service|*/session.slice/dbus-broker.service|*/dbus.service) ;;
+      *) echo "$pid" ;;
+    esac
+  done
+}
+
+# Procesos de Domi con la GPU abierta (contextos gráficos incluidos: nvidia-smi solo ve cómputo).
+domi_gpu_pids() {
+  as_domi sh -c 'for p in /proc/[0-9]*; do ls -l "$p/fd" 2>/dev/null | grep -qE "/dev/(nvidia|dri/)" && echo "${p#/proc/}"; done' 2>/dev/null
+}
+
+# Unidades de usuario de Domi que sobreviven al modo off (persistencia: timers, servicios propios).
+domi_user_persistence() {
+  as_domi systemctl --user list-units --state=active --no-legend --plain --type=service,timer,path 2>/dev/null |
+    awk '{print $1}' | grep -vE '^(dbus(-broker)?|pipewire(-pulse)?|wireplumber|systemd-.*|xdg-.*|dconf)\.(service|socket)$' || true
+}
+
+# Comprueba que no queda nada de Domi consumiendo recursos; devuelve 1 si algo sigue.
+verify_off() {
+  local bad=0 left gpu_left
+  # 1. procesos: TERM → KILL escalonado sobre lo que quede
+  left=$(domi_leftover_pids)
+  if [[ -n $left ]]; then
+    warn "Quedan procesos de $DOMI: $(ps -o comm= -p $(tr '\n' ',' <<<"$left" | sed 's/,$//') 2>/dev/null | sort -u | tr '\n' ' ')"
+    as_domi kill -TERM $left 2>/dev/null || true; sleep 3
+    left=$(domi_leftover_pids)
+    [[ -n $left ]] && { as_domi kill -KILL $left 2>/dev/null || true; sleep 1; left=$(domi_leftover_pids); }
+  fi
+  if [[ -z $left ]]; then ok "Sin procesos de $DOMI"; else err "Siguen vivos (PIDs): $(tr '\n' ' ' <<<"$left")"; bad=1; fi
+
+  # 2. GPU (cualquier fd abierto a /dev/nvidia* o /dev/dri/*)
+  gpu_left=$(domi_gpu_pids)
+  if [[ -z $gpu_left ]]; then ok "GPU libre de procesos de $DOMI"; else err "Procesos de $DOMI con la GPU abierta: $(tr '\n' ' ' <<<"$gpu_left")"; bad=1; fi
+  local pers
+  pers=$(domi_user_persistence)
+  [[ -n $pers ]] && warn "Unidades de usuario de $DOMI activas en off (¿persistencia?): $(tr '\n' ' ' <<<"$pers")"
+
+  # 3. servicios, red y puertos
+  for s in "moonshine@$DOMI" domi-tailscale; do
+    systemctl is-active -q "$s" && { err "$s sigue activo"; bad=1; }
+  done
+  ip netns list 2>/dev/null | grep -q '^domi-ts' && { err "El namespace domi-ts sigue creado"; bad=1; }
+  ip link show veth-domi-h >/dev/null 2>&1 && { err "veth-domi-h sigue creada"; bad=1; }
+  if ss -Hltun 2>/dev/null | awk '{print $5}' | grep -qE ':(47984|47989|48010|4799[89]|480[01][0-9]|41642)$'; then
+    err "Hay puertos de Moonshine/VPN a la escucha"; bad=1
+  else
+    ok "Servicios, red y puertos de Domi cerrados"
+  fi
+
+  # 4. lo que se pausó vuelve
+  if [[ -e $STATE_DIR/docker-was-active ]]; then
+    systemctl is-active -q docker.service && ok "Docker activo" || { err "Docker no se reanudó"; bad=1; }
+  fi
+
+  # 5. resumen de recursos
+  local after before=""
+  after=$(mem_avail_mb)
+  [[ -r $STATE_DIR/ram-before ]] && before=$(<"$STATE_DIR/ram-before")
+  info "RAM disponible: ${after} MB${before:+ (al activar: ${before} MB)} · $(gpu_line)"
+  return $bad
+}
+
+cmd_on() {
+  if systemctl is-active -q "moonshine@$DOMI"; then
+    ok "El modo Domi ya está activo"; cmd_status; return 0
+  fi
+  mem_avail_mb > "$STATE_DIR/ram-before"
+  on_ac || warn "El portátil está con batería: la RTX 4050 va limitada y la batería se va rápido. Enchúfalo."
+
+  stop_jetbrains
+
+  if systemctl is-active -q docker.service || systemctl is-active -q docker.socket; then
+    info "Pausando Docker…"
+    systemctl stop docker.socket && systemctl stop docker.service && touch "$STATE_DIR/docker-was-active" && ok "Docker detenido"
+  else
+    info "Docker no estaba activo"
+  fi
+
+  systemctl start domi-tailscale.service && ok "VPN de Domi arriba" || err "No arrancó domi-tailscale.service"
+  if ! systemctl start "moonshine@$DOMI.service"; then
+    err "No arrancó moonshine@$DOMI; deshago los cambios"
+    cmd_off --force >/dev/null
+    return 1
+  fi
+  ok "Moonshine arriba (usuario $DOMI, GPU NVIDIA)"
+
+  date +%s > "$STATE_DIR/on-since"
+  notify "Modo Domi activado" "Domi ya puede conectarse por Moonlight"
+  echo; cmd_status
+}
+
+cmd_off() {
+  local force=${1:-}
+  if client_connected && [[ $force != --force ]]; then
+    err "Domi está conectada ahora mismo. Usa 'domictl off --force' para cortarle la sesión."
+    return 1
+  fi
+
+  if pgrep -u "$DOMI" -x steam >/dev/null; then
+    info "Cerrando Steam de Domi (guardado en la nube)…"
+    as_domi /usr/bin/steam -shutdown >/dev/null 2>&1 &
+    for _ in $(seq 1 30); do pgrep -u "$DOMI" -x steam >/dev/null || break; sleep 1; done
+  fi
+  as_domi systemctl --user stop moonshine.slice 2>/dev/null || true
+  systemctl stop "moonshine@$DOMI.service" && ok "Moonshine detenido"
+  # Lo que quede de la sesión de Domi (juegos colgados, Xwayland) no debe seguir en la GPU.
+  # Se mata como domi: el administrador no tiene permiso para matar procesos de otro usuario.
+  as_domi pkill -TERM -f -i '(\.exe|steam|Xwayland|wine|proton|Sober)' 2>/dev/null || true
+  sleep 2
+  as_domi pkill -KILL -f -i '(\.exe|steam|Xwayland|wine|proton|Sober)' 2>/dev/null || true
+  systemctl stop domi-tailscale.service && ok "VPN de Domi detenida"
+
+  if [[ -e $STATE_DIR/docker-was-active ]]; then
+    systemctl start docker.socket && systemctl start docker.service && ok "Docker reanudado"
+  fi
+  if [[ -e $STATE_DIR/jetbrains-was-open ]]; then
+    info "JetBrains estaba abierto antes; ábrelo cuando lo necesites."
+  fi
+
+  local rc=0
+  verify_off || rc=1
+  rm -f "$STATE_DIR"/{jetbrains-was-open,on-since,ram-before}
+  systemctl is-active -q docker.service && rm -f "$STATE_DIR/docker-was-active"
+  if (( rc == 0 )); then
+    ok "Todo devuelto: la máquina es solo tuya"
+    notify "Modo Domi desactivado" "Recursos devueltos a tu sesión"
+  else
+    err "Quedó algo de Domi activo (ver arriba)"
+    notify -u critical "Modo Domi desactivado con restos" "Revisa 'domictl status'"
+  fi
+  return $rc
+}
+
+gpu_line() {
+  nvidia-smi --query-gpu=utilization.gpu,utilization.encoder,memory.used,memory.total,power.draw,temperature.gpu \
+    --format=csv,noheader,nounits 2>/dev/null |
+    awk -F', ' '{printf "GPU %s%% · encoder %s%% · VRAM %s/%s MB · %s W · %s °C", $1,$2,$3,$4,$5,$6}'
+}
+
+cmd_status() {
+  local s
+  for s in "moonshine@$DOMI" domi-tailscale docker; do
+    if systemctl is-active -q "$s"; then ok "$s activo"; else info "$s inactivo"; fi
+  done
+  if systemctl is-active -q "moonshine@$DOMI"; then
+    if client_connected; then ok "Domi está conectada"; else info "Sin cliente conectado"; fi
+  fi
+  [[ -e $STATE_DIR/on-since ]] && systemctl is-active -q "moonshine@$DOMI" && info "Modo Domi activo desde $(date -d @"$(cat "$STATE_DIR/on-since")" '+%H:%M')"
+  if systemctl is-active -q domi-tailscale; then
+    local ip
+    ip=$(dts ip -4 2>/dev/null | head -1)
+    [[ -n $ip ]] && ok "VPN: Domi-PC en $ip (tailnet personal)" || warn "VPN sin sesión iniciada (ver 'domictl doctor')"
+  fi
+  info "$(gpu_line)"
+  local avail swap psi
+  avail=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo)
+  swap=$(free -m | awk '/^(Swap|Inter)/{printf "%.1f", $3/1024}')
+  psi=$(awk -F'avg10=' '/some/{split($2,a," ");print a[1]}' /proc/pressure/memory)
+  info "RAM disponible ${avail} GB · swap ${swap} GB · presión ${psi}%"
+  local domi_mem
+  domi_mem=$(systemctl show user-$DOMI_UID.slice -p MemoryCurrent --value 2>/dev/null)
+  [[ $domi_mem =~ ^[0-9]+$ ]] && info "Sesión de Domi: $(awk -v b="$domi_mem" 'BEGIN{printf "%.1f", b/1073741824}') GB (límite 9 GB blando / 11 GB duro)"
+}
+
+# Estado en JSON para widgets. No despierta la dGPU con el modo apagado (nvidia-smi la saca de D3cold).
+cmd_status_json() {
+  local on=false vpn=false conn=false docker=false since=0 gpu="" rt=""
+  systemctl is-active -q "moonshine@$DOMI" && on=true
+  systemctl is-active -q domi-tailscale && vpn=true
+  systemctl is-active -q docker && docker=true
+  if [[ $on == true ]]; then
+    client_connected && conn=true
+    [[ -r $STATE_DIR/on-since ]] && since=$(<"$STATE_DIR/on-since")
+    [[ $since =~ ^[0-9]+$ ]] || since=0
+    gpu=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' "\\')
+  else
+    rt=$(cat "/sys/bus/pci/devices/$NV_PCI/power/runtime_status" 2>/dev/null | head -1 | tr -dc 'a-z')
+  fi
+  printf '{"on":%s,"connected":%s,"vpn":%s,"docker":%s,"since":%s,"ram_free_mb":%s,"gpu":"%s","gpu_state":"%s"}\n' \
+    "$on" "$conn" "$vpn" "$docker" "$since" "$(mem_avail_mb)" "$gpu" "$rt"
+}
+
+hint() { printf '    %s→ %s%s\n' "$c_dim" "$*" "$c_off"; }
+
+cmd_doctor() {
+  local bad=0
+  echo "== 1. GPU"
+  if [[ -e $NV_RENDER ]]; then ok "Render NVIDIA: $NV_RENDER -> $(readlink -f "$NV_RENDER")"
+  else err "No existe $NV_RENDER (¿driver NVIDIA caído?)"; hint "comprueba NV_PCI en /etc/domi-pc.conf y el driver"; bad=1; fi
+  nvidia-smi -L >/dev/null 2>&1 && ok "nvidia-smi responde" || { err "nvidia-smi falla"; hint "recarga el módulo NVIDIA o reinicia (dmesg | grep -i nvrm)"; bad=1; }
+  info "$(gpu_line)"
+
+  echo "== 2. Usuario y permisos"
+  id "$DOMI" >/dev/null 2>&1 && ok "Usuario $DOMI existe" || { err "Falta el usuario $DOMI"; bad=1; }
+  loginctl show-user "$DOMI" -p Linger --value 2>/dev/null | grep -q yes && ok "Linger activo" || { err "Linger desactivado"; hint "pkexec loginctl enable-linger $DOMI"; bad=1; }
+  sudo -n -u "$DOMI" true 2>/dev/null && ok "Puedo actuar como $DOMI" || { err "sudo -u $DOMI no funciona"; hint "revisa /etc/sudoers.d/50-domi-pc y vuelve a ejecutar install-system.sh"; bad=1; }
+  if as_domi test -w /dev/uinput; then err "Los juegos de $DOMI pueden crear teclados virtuales (inyección en tu sesión)"; hint "reinstala: pkexec bash <repo>/system/install-system.sh"; bad=1
+  else ok "Los juegos de $DOMI no pueden crear dispositivos virtuales (solo el servicio Moonshine)"; fi
+  systemctl show "moonshine@$DOMI" -p SupplementaryGroups --value | grep -qw "$(stat -c %G /dev/uinput)" &&
+    ok "El servicio Moonshine puede crear mandos (grupo $(stat -c %G /dev/uinput))" ||
+    { err "Moonshine no tiene acceso a /dev/uinput (grupo $(stat -c %G /dev/uinput))"; bad=1; }
+  if as_domi test -r /dev/input/event0 2>/dev/null; then err "$DOMI puede leer tu input físico (aislamiento roto)"; hint "revisa udev 61-domi-pc-input.rules (reinstala)"; bad=1
+  else ok "$DOMI no lee tu teclado/ratón"; fi
+  hyprctl devices 2>/dev/null | grep -qi moonshine && { err "Tu Hyprland ve dispositivos de Moonshine"; bad=1; } || ok "Tu Hyprland no ve dispositivos de Domi"
+
+  echo "== 3. Moonshine"
+  if systemctl is-active -q "moonshine@$DOMI"; then
+    ok "moonshine@$DOMI activo"
+    local env
+    env=$(systemctl show "moonshine@$DOMI" -p Environment --value)
+    [[ $env == *nvidia_icd.json* && $env == *"$NV_RENDER"* ]] && ok "Render + encoder fijados a la NVIDIA" || { err "Drop-in de GPU ausente"; hint "reinstala: pkexec bash <repo>/system/install-system.sh"; bad=1; }
+    journalctl -u "moonshine@$DOMI" -n 200 --no-pager -o cat | grep -E ' ERROR ' | tail -3 | sed 's/^/    /'
+  else
+    info "Moonshine inactivo (normal si el modo Domi está apagado)"
+    # Healthcheck propio de Moonshine con el mismo entorno de GPU que el servicio
+    # (con el servicio activo daría falso FAIL en puertos ocupados).
+    local hc
+    hc=$(as_domi MOONSHINE_RENDER_NODE="$NV_RENDER" VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+      /usr/bin/moonshine "$DOMI_HOME/.config/moonshine/config.toml" healthcheck 2>&1)
+    grep -E 'FAIL|Vulkan|Codecs' <<<"$hc" | sed 's/^/    /'
+    grep -q FAIL <<<"$hc" && bad=1
+    grep -q 'Vulkan.*NVIDIA' <<<"$hc" || { err "El encoder no ve la NVIDIA"; bad=1; }
+  fi
+
+  echo "== 4. VPN"
+  if systemctl is-active -q domi-tailscale; then
+    ok "domi-tailscale activo (namespace domi-ts)"
+    local st
+    st=$(dts status --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("BackendState",""))' 2>/dev/null)
+    [[ $st == Running ]] && ok "Sesión de la tailnet personal iniciada" || { warn "Estado: ${st:-desconocido}"; hint "tailscale --socket=$TS_SOCK up --hostname=domi-pc"; bad=1; }
+    dts status 2>/dev/null | awk 'NR>1 && $0 !~ /offline/ {print "    " $0}'
+    info "Para ver si la conexión con Domi es directa: tailscale --socket=$TS_SOCK ping <dispositivo-de-domi>"
+  else
+    info "VPN inactiva (normal si el modo Domi está apagado)"
+  fi
+  tailscale status >/dev/null 2>&1 && ok "Tu tailnet de trabajo sigue intacta" || warn "Tailscale de trabajo no responde"
+
+  echo "== 5. Recursos"
+  cmd_status | grep -E 'RAM|Sesión' ; on_ac && ok "Enchufado a corriente" || warn "Con batería"
+  local free
+  free=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
+  (( free >= 15 )) && ok "Disco: ${free} GB libres" || warn "Disco: solo ${free} GB libres"
+
+  echo; (( bad )) && err "Hay problemas arriba (las líneas → indican cómo arreglarlos)" || ok "Todo en orden"
+  return $bad
+}
+
+cmd_pin() {
+  local pin=${1:?uso: domictl pin <PIN>} url
+  url=$(journalctl -u "moonshine@$DOMI" -n 200 --no-pager -o cat | grep -o 'http://[^ ]*/pin?uniqueid=[A-Za-z0-9]*' | tail -1)
+  [[ -z $url ]] && { err "No hay emparejamiento pendiente: añade el PC en Moonlight primero"; return 1; }
+  local base=${url%%/pin*} uid=${url##*uniqueid=}
+  curl -fsS -X POST "$base/submit-pin" -H 'Content-Type: application/x-www-form-urlencoded' \
+    -d "uniqueid=$uid&pin=$pin" && echo && ok "PIN enviado"
+}
+
+cmd_add_game() {
+  local name=${1:?uso: domictl add-game <nombre> <ruta.exe>} exe=${2:?falta la ruta al .exe}
+  if pgrep -u "$DOMI" -x steam >/dev/null; then
+    err "El Steam de Domi está abierto. Ciérralo (Quit app en Moonlight) y repite."; return 1
+  fi
+  as_domi python3 -I "$LIB_DIR/domi-add-game.py" "$name" "$exe"
+}
+
+# Panel web local (solo 127.0.0.1, con token) para artwork de SteamGridDB y alta de juegos.
+cmd_panel() {
+  local key_src=$HOME/.config/domi-pc/steamgriddb.key url="" fifo
+  [[ -r $key_src ]] || { err "Falta la API key en $key_src"; return 1; }
+  fifo=$(mktemp -u "${XDG_RUNTIME_DIR:-/tmp}/domi-panel.XXXXXX")
+  mkfifo -m 600 "$fifo"
+  # La API key va por stdin (no por argv ni a disco en el HOME de domi)
+  as_domi PANEL_KEY_STDIN=1 python3 -I "$LIB_DIR/domi-panel.py" < "$key_src" > "$fifo" &
+  local pid=$!
+  trap "kill $pid 2>/dev/null; rm -f '$fifo'" INT TERM EXIT
+  read -r -t 10 url < "$fifo" || true
+  if [[ -z $url ]] || ! kill -0 "$pid" 2>/dev/null; then
+    err "El panel no arrancó"; return 1
+  fi
+  [[ $url =~ ^http://127\.0\.0\.1:[0-9]+/\?t=[A-Za-z0-9_-]+$ ]] || { err "URL del panel inesperada"; return 1; }
+  ok "Panel en $url  (Ctrl+C para cerrarlo)"
+  xdg-open "$url" >/dev/null 2>&1 &
+  wait "$pid"
+}
+
+case "${1:-status}" in
+  on) cmd_on ;;
+  off) shift; cmd_off "${1:-}" ;;
+  status) if [[ ${2:-} == --json ]]; then cmd_status_json; else cmd_status; fi ;;
+  doctor) cmd_doctor ;;
+  pin) shift; cmd_pin "$@" ;;
+  add-game) shift; cmd_add_game "$@" ;;
+  panel) cmd_panel ;;
+  sync)
+    pgrep -u "$DOMI" -x steam >/dev/null && { err "Cierra el Steam de Domi primero (Quit app en Moonlight)."; exit 1; }
+    as_domi python3 -I "$LIB_DIR/domi-sync.py" ;;
+  logs) journalctl -u "moonshine@$DOMI" -f -o cat ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) err "Comando desconocido: $1"; sed -n '4,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
