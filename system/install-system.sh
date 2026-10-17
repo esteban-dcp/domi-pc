@@ -102,7 +102,8 @@ sudo -u "$DOMI_USER" install -m644 "$SRC/system/boxart/dev.png" "$MCONF/boxart/d
 pkill -u "$DOMI_USER" -f 'domi-panel.py' 2>/dev/null && echo "== panel de Domi cerrado: vuelve a abrirlo con domictl panel" || true
 
 systemctl daemon-reload
-systemctl enable --now domi-firewall.service
+systemctl enable domi-firewall.service
+systemctl restart domi-firewall.service   # reaplica las reglas si cambió el script
 if systemctl is-active -q domi-tailscale.service; then
   $LIB/domi-netns.sh up
   # tailscaled de Domi sin reglas propias (las gestionamos nosotros) y sin operador

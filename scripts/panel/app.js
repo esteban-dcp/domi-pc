@@ -143,7 +143,7 @@ function chooseGame(id) {
   sgGame = id;
   document.querySelectorAll("#results [data-sg]").forEach(b => b.classList.toggle("on", +b.dataset.sg === id));
   $("#picker").innerHTML = `<div class="tabs">${KINDS.map(([k, l]) => `<button class="btn ${k === kind ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}
-    <span style="flex:1"></span><button class="btn pri" id="do-auto">✨ Auto: lo mejor de todo</button></div><div id="tiles"></div>`;
+    <span style="flex:1"></span><button class="btn" id="do-steam" title="Aplica los assets oficiales de la tienda de Steam que existan">Originales de Steam</button> <button class="btn pri" id="do-auto">✨ Auto: lo mejor de todo</button></div><div id="tiles"></div>`;
   showKind();
 }
 
@@ -153,7 +153,7 @@ async function showKind() {
   try {
     const a = await api(`/api/assets?game=${sgGame}&kind=${kind}`);
     el.className = "grid" + (["wide", "hero", "logo"].includes(kind) ? " wide" : "");
-    el.innerHTML = a.map(x => `<button class="tile" data-url="${esc(x.url)}"><img loading="lazy" src="${esc(x.thumb)}" alt=""><small>${esc(x.width)}×${esc(x.height)} · ${esc(x.style || "")}</small></button>`).join("")
+    el.innerHTML = a.map(x => `<button class="tile" data-url="${esc(x.url)}"><img loading="lazy" src="${esc(x.thumb)}" alt=""><small>${x.width ? esc(x.width) + "×" + esc(x.height) + " · " : ""}${esc(x.style || "")}</small></button>`).join("")
       || '<span class="muted">No hay imágenes de este tipo.</span>';
   } catch (e) { el.className = "muted"; el.textContent = e.message; }
 }
@@ -194,7 +194,7 @@ async function removeGame(files) {
 
 /* ---------- eventos (delegación; sin onclick inline) ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-id],[data-sg],[data-k],[data-url],[data-act],#do-auto");
+  const t = e.target.closest("[data-id],[data-sg],[data-k],[data-url],[data-act],#do-auto,#do-steam");
   if (!t) return;
   try {
     if (t.dataset.id) return pick(+t.dataset.id);
@@ -203,6 +203,14 @@ document.addEventListener("click", async e => {
     if (t.dataset.url) {
       const r = await post("/api/apply", {appid: cur.appid, kind, url: t.dataset.url});
       toast(r.note || "Aplicado ✔"); return refreshKeep();
+    }
+    if (t.id === "do-steam") {
+      toast("Buscando los originales de Steam…");
+      const r = await post("/api/steam-originals", {appid: cur.appid, game: sgGame});
+      const got = Object.keys(r.applied);
+      toast(got.length ? "Originales de Steam aplicados: " + got.join(", ") + (r.missing.length ? ` (sin original: ${r.missing.join(", ")})` : "")
+                       : "Este juego no tiene assets originales en Steam", !got.length);
+      return refreshKeep();
     }
     if (t.id === "do-auto") {
       toast("Aplicando lo mejor de cada tipo…");

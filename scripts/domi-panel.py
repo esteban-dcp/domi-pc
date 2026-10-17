@@ -194,6 +194,18 @@ class Handler(BaseHTTPRequestHandler):
                             apply_art(appid, kind, items[0]["url"])
                             done[kind] = True
                 return self._json({"applied": done})
+            if u.path == "/api/steam-originals":
+                appid, game = int(body["appid"]), int(body["game"])
+                done, missing = {}, []
+                with WRITE_LOCK:
+                    for kind in KINDS:
+                        orig = sg.steam_original(game, kind)
+                        if orig:
+                            apply_art(appid, kind, orig["url"])
+                            done[kind] = True
+                        else:
+                            missing.append(kind)
+                return self._json({"applied": done, "missing": missing})
             if u.path == "/api/remove":
                 if ss.steam_running():
                     return self._json({"error": "Cierra el Steam de Domi (Quit app en Moonlight) para quitar juegos."}, 409)
